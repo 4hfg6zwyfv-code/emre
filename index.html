@@ -191,14 +191,14 @@ h2{font-family:var(--display);font-weight:400;font-size:30px;margin:0}
   <header class="top"><h2>الإعدادات</h2><button class="back" data-go="home">رجوع</button></header>
   <div class="scroll">
     <div class="field">
-      <label for="setKey">مفتاح Gemini (مجاني)</label>
-      <input type="password" id="setKey" class="tr" placeholder="AIza..." autocomplete="off">
+      <label for="setKey">مفتاح Gemini (مجاني) أو مفتاح Claude</label>
+      <input type="password" id="setKey" class="tr" placeholder="AIza... أو sk-ant-..." autocomplete="off">
       <ol class="steps">
         <li>افتح <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> وسجّل بحساب Google</li>
         <li>اضغط <b>Create API key</b> وانسخه</li>
         <li>الصقه هون واضغط حفظ</li>
       </ol>
-      <p class="note">بيضل محفوظ على جهازك فقط.</p>
+      <p class="note">مفتاح Claude من <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> (مدفوع حسب الاستخدام، منفصل عن اشتراك Claude). المفتاح بيضل محفوظ على جهازك فقط.</p>
     </div>
     <div class="field">
       <label for="setModel">النموذج</label>
@@ -206,6 +206,8 @@ h2{font-family:var(--display);font-weight:400;font-size:30px;margin:0}
         <option value="gemini-2.5-flash">Gemini 2.5 Flash — الأفضل</option>
         <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite — أسرع، حد مجاني أكبر</option>
         <option value="gemini-flash-latest">Gemini Flash (أحدث نسخة)</option>
+        <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — سريع ورخيص</option>
+        <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — أفضل تركي</option>
       </select>
     </div>
     <div class="field">
@@ -303,11 +305,25 @@ function speak(text,onend){
 function unlockAudio(){try{const u=new SpeechSynthesisUtterance(' ');u.volume=0;u.lang='tr-TR';speechSynthesis.speak(u);}catch(e){}}
 
 /* AI (Gemini) */
-async function llm(system,turns,{json=false,max=400}={}){
+async function claudeLLM(system,turns,{json=false,max=400}={}){
+  let model=S.settings.model;if(!model.startsWith('claude'))model='claude-haiku-4-5-20251001';
+  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+    headers:{'content-type':'application/json','x-api-key':S.settings.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model,max_tokens:max,system:json?system+'\nReply with only valid JSON.':system,
+      messages:(()=>{const m=[];for(const t of turns){const l=m[m.length-1];if(l&&l.role===t.role)l.content+='\n'+t.content;else m.push({role:t.role,content:t.content});}if(m[0]?.role!=='user')m.unshift({role:'user',content:'.'});return m;})()})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){const err=new Error(d.error?.message||('HTTP '+r.status));err.status=r.status;throw err;}
+  const text=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
+  if(!text){const err=new Error('empty');err.status=0;throw err;}
+  return text;
+}
+async function llm(system,turns,opts={}){
+  if(S.settings.apiKey.startsWith('sk-ant'))return claudeLLM(system,turns,opts);
+  const {json=false,max=400}=opts;
   const contents=[];
   for(const t of turns){const role=t.role==='assistant'?'model':'user';const last=contents[contents.length-1];
     if(last&&last.role===role)last.parts[0].text+='\n'+t.content;else contents.push({role,parts:[{text:t.content}]});}
-  const model=S.settings.model;
+  let model=S.settings.model;if(model.startsWith('claude'))model='gemini-2.5-flash';
   const gc={maxOutputTokens:max,temperature:json?0.4:0.9};
   if(json)gc.responseMimeType='application/json';
   if(model.startsWith('gemini-2.5'))gc.thinkingConfig={thinkingBudget:0};
@@ -324,6 +340,7 @@ function parseJSON(t){t=t.replace(/```json|```/g,'');return JSON.parse(t.slice(t
 function errText(e){
   const s=e&&e.status;
   if(s===400||s===401||s===403)return 'المفتاح غلط أو ناقص — راجع الإعدادات.';
+  if(s===402)return 'رصيد مفتاح Claude خلص — اشحن من console.anthropic.com.';
   if(s===429)return 'وصلت الحد المجاني بالدقيقة، استنى شوي وجرّب.';
   if(s===404)return 'النموذج غير متاح — غيّره من الإعدادات.';
   if(!navigator.onLine)return 'ما في إنترنت.';
