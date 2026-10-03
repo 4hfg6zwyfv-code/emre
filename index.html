@@ -320,16 +320,21 @@ async function claudeLLM(system,turns,o={}){
   try{return await claudeCall(system,turns,o);}
   catch(e){if(e.status!==404)throw e;S.settings.model='claude-haiku-4-5-20251001';save();return claudeCall(system,turns,o);}
 }
+let noThinkParam=false;
 async function claudeCall(system,turns,{json=false,max=400}={}){
   let model=S.settings.model;if(!model.startsWith('claude'))model='claude-haiku-4-5-20251001';
+  const messages=(()=>{const m=[];for(const t of turns){const l=m[m.length-1];if(l&&l.role===t.role)l.content+='\n'+t.content;else m.push({role:t.role,content:t.content});}if(m[0]?.role!=='user')m.unshift({role:'user',content:'.'});return m;})();
+  const body={model,max_tokens:Math.max(1024,max),system:json?system+'\nReply with only valid JSON.':system,messages};
+  if(!noThinkParam)body.thinking={type:'disabled'};
   const r=await tfetch('https://api.anthropic.com/v1/messages',{method:'POST',
     headers:{'content-type':'application/json','x-api-key':S.settings.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify({model,max_tokens:max,system:json?system+'\nReply with only valid JSON.':system,
-      messages:(()=>{const m=[];for(const t of turns){const l=m[m.length-1];if(l&&l.role===t.role)l.content+='\n'+t.content;else m.push({role:t.role,content:t.content});}if(m[0]?.role!=='user')m.unshift({role:'user',content:'.'});return m;})()})});
+    body:JSON.stringify(body)},json?90000:45000);
   const d=await r.json().catch(()=>({}));
-  if(!r.ok){const err=new Error(d.error?.message||('HTTP '+r.status));err.status=r.status;throw err;}
+  if(!r.ok){
+    if(r.status===400&&!noThinkParam&&/thinking/i.test(d.error?.message||'')){noThinkParam=true;return claudeCall(system,turns,{json,max});}
+    const err=new Error(d.error?.message||('HTTP '+r.status));err.status=r.status;err.type=d.error?.type;throw err;}
   const text=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
-  if(!text){const err=new Error('empty');err.status=0;throw err;}
+  if(!text){const err=new Error('empty reply ('+(d.stop_reason||'?')+')');err.status=0;throw err;}
   return text;
 }
 async function pickGeminiModel(){
@@ -371,13 +376,17 @@ async function geminiLLM(system,turns,opts={}){
 function parseJSON(t){t=t.replace(/```json|```/g,'');return JSON.parse(t.slice(t.indexOf('{'),t.lastIndexOf('}')+1));}
 function errText(e){
   const s=e&&e.status;
-  if(s===400||s===401||s===403)return 'المفتاح غلط أو ناقص — راجع الإعدادات.';
+  const msg=String(e&&e.message||'');
+  if(/credit|billing|balance/i.test(msg))return 'رصيد حساب Claude صفر — اشحن من console.anthropic.com ← Billing.';
+  if(s===401||s===403||/api.?key/i.test(msg))return 'المفتاح غلط أو ناقص — راجع الإعدادات.';
+  if(s===400)return 'خطأ بالطلب: '+msg.slice(0,90);
   if(s===402)return 'رصيد مفتاح Claude خلص — اشحن من console.anthropic.com.';
-  if(s===429)return 'وصلت الحد المجاني بالدقيقة، استنى شوي وجرّب.';
+  if(s===429)return 'طلبات كثيرة بنفس الوقت، استنى شوي وجرّب.';
+  if(s===529||s===503||s===500)return 'الخدمة مضغوطة هلأ، جرّب كمان مرة.';
   if(s===404)return 'النموذج غير متاح — غيّره من الإعدادات.';
   if(s===-1)return 'الرد تأخر كثير.';
   if(!navigator.onLine)return 'ما في إنترنت.';
-  return 'انقطع الاتصال.';
+  return 'انقطع الاتصال.'+(e&&e.message?' ('+String(e.message).slice(0,80)+')':'');
 }
 
 function pickReview(){
