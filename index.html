@@ -298,11 +298,20 @@ function speak(text,onend){
   if(!('speechSynthesis' in window)){fin();return;}
   try{speechSynthesis.cancel();
     const u=new SpeechSynthesisUtterance(text);u.lang='tr-TR';if(trVoice)u.voice=trVoice;u.rate=S.settings.rate;
-    u.onend=fin;u.onerror=fin;speechSynthesis.speak(u);
+    u.onend=fin;u.onerror=fin;
+    let started=false;u.onstart=()=>{started=true;};
+    try{actx&&actx.resume();}catch(e){}
+    setTimeout(()=>speechSynthesis.speak(u),120);
+    setTimeout(()=>{if(!started&&!done&&!warnedSilent){warnedSilent=true;toast('ما في صوت؟ اطفي وضع الصامت وارفع الصوت، أو اضغط على رسالة Emre');}},2500);
     setTimeout(()=>{if(!done){try{speechSynthesis.cancel();}catch(e){}fin();}},Math.max(5000,text.length*110/ (S.settings.rate||1)));
   }catch(e){fin();}
 }
-function unlockAudio(){try{const u=new SpeechSynthesisUtterance(' ');u.volume=0;u.lang='tr-TR';speechSynthesis.speak(u);}catch(e){}}
+let actx=null;
+function unlockAudio(){
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance('Hazır');u.lang='tr-TR';if(trVoice)u.voice=trVoice;u.volume=0.01;speechSynthesis.speak(u);}catch(e){}
+  try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume();const b=actx.createBuffer(1,1,22050);const s=actx.createBufferSource();s.buffer=b;s.connect(actx.destination);s.start(0);}catch(e){}
+}
+let warnedSilent=false;
 
 /* AI (Gemini / Claude) */
 async function tfetch(url,opts,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);
