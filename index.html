@@ -158,7 +158,7 @@ h2{font-family:var(--display);font-weight:400;font-size:30px;margin:0}
     <button class="end" id="endBtn">إنهاء الجلسة</button>
   </header>
   <div id="msgs" class="msgs"></div>
-  <div id="dictHint" class="dict" hidden>🎙️ احكي بالتركي — المايك بيفتح لحاله بعد ما Emre يخلص كلامه. اضغط 🎙️ لتوقفه أو تشغّله.</div>
+  <div id="dictHint" class="dict" hidden>🎙️ احكي بالتركي — المايك بيفتح لحاله. خذ وقتك، وبيرسل لما تسكت كم ثانية، أو اضغط ➤ لترسل فورًا.</div>
   <div id="stuckBox" class="stuck" hidden>
     <textarea id="stuckInput" placeholder="اكتب بالعربي اللي بدك تقوله"></textarea>
     <div class="row"><button id="stuckGo">قلها بالتركي</button><button id="stuckClose" class="ghost">إغلاق</button></div>
@@ -215,12 +215,37 @@ h2{font-family:var(--display);font-weight:400;font-size:30px;margin:0}
       <select id="setHands"><option value="1">نعم</option><option value="0">لا</option></select>
     </div>
     <div class="field">
+      <label for="setWait">كم يستنى بعد ما تسكت قبل ما يرسل كلامك</label>
+      <select id="setWait"><option value="2.5">2.5 ثانية</option><option value="3.5">3.5 ثانية</option><option value="5">5 ثواني</option><option value="7">7 ثواني</option></select>
+      <p class="note">إذا بيقاطعك، زيد المدة. وتقدر تضغط ➤ لترسل فورًا.</p>
+    </div>
+    <div class="field">
       <label for="setLevel">مستواي الحالي</label>
       <select id="setLevel"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option></select>
       <p class="note">يتحدّث تلقائيًا بعد الجلسات.</p>
     </div>
     <div class="field">
-      <label for="setVoice">صوت Emre</label>
+      <label for="setEngine">نوع الصوت</label>
+      <select id="setEngine"><option value="human">صوت بشري طبيعي (Gemini) — مستحسن</option><option value="device">صوت الآيفون</option></select>
+    </div>
+    <div class="field" id="ttsKeyField">
+      <label for="setTtsKey">مفتاح Gemini للصوت البشري (مجاني)</label>
+      <input type="password" id="setTtsKey" class="tr" placeholder="AIza..." autocomplete="off">
+      <p class="note">إذا مفتاحك الأساسي Claude، حط هون مفتاح Gemini مجاني من <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> — بيستخدم للصوت بس.</p>
+    </div>
+    <div class="field">
+      <label for="setTtsVoice">شخصية الصوت البشري</label>
+      <select id="setTtsVoice">
+        <option value="Puck">Puck — شب مرح وحيوي</option>
+        <option value="Fenrir">Fenrir — شب متحمس</option>
+        <option value="Orus">Orus — شب هادي وواثق</option>
+        <option value="Charon">Charon — صوت رجولي عميق</option>
+        <option value="Algenib">Algenib — صوت خشن</option>
+        <option value="Achird">Achird — ودود</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="setVoice">صوت الآيفون (احتياطي)</label>
       <select id="setVoice"></select>
       <p class="note">لصوت أحلى على الآيفون: الإعدادات ← تسهيلات الاستخدام ← المحتوى المنطوق ← الأصوات ← Türkçe، ونزّل نسخة Enhanced.</p>
     </div>
@@ -247,7 +272,7 @@ h2{font-family:var(--display);font-weight:400;font-size:30px;margin:0}
 <script>
 const $=s=>document.querySelector(s);
 const LKEY='emre_v2';
-const DEF={settings:{rate:0.95,voiceURI:'',auto:true,apiKey:'',model:'gemini-flash-latest',hands:true},
+const DEF={settings:{rate:0.95,voiceURI:'',auto:true,apiKey:'',model:'gemini-flash-latest',hands:true,wait:3.5,voiceEngine:'human',ttsKey:'',ttsVoice:'Puck'},
   profile:{level:'A2',sessions:0,streak:0,lastDay:null,minutes:0},
   days:{},vocab:[],mistakes:[],facts:[],emre:[],hooks:[],history:[]};
 const clone=o=>JSON.parse(JSON.stringify(o));
@@ -293,7 +318,66 @@ let trVoice=null;
 function trVoices(){try{return speechSynthesis.getVoices().filter(v=>(v.lang||'').toLowerCase().replace('_','-').startsWith('tr'));}catch(e){return [];}}
 function pickVoice(){const vs=trVoices();trVoice=vs.find(v=>v.voiceURI===S.settings.voiceURI)||vs.find(v=>/enhanced|premium|yelda|cem/i.test(v.name+v.voiceURI))||vs[0]||null;}
 if('speechSynthesis' in window){try{speechSynthesis.addEventListener('voiceschanged',pickVoice);}catch(e){} pickVoice();}
+/* HUMAN VOICE (Gemini TTS) */
+let player=null,ttsModel=null,curFin=null;
+function ttsKey(){const k=(S.settings.ttsKey||'').trim();if(k)return k;const m=S.settings.apiKey||'';return m.startsWith('AIza')?m:'';}
+function useHumanVoice(){return S.settings.voiceEngine!=='device'&&!!ttsKey();}
+async function findTtsModel(){
+  if(ttsModel)return ttsModel;
+  try{const r=await tfetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':ttsKey()}},10000);
+    const d=await r.json();const names=(d.models||[]).map(m=>m.name.replace('models/','')).filter(n=>/tts/.test(n));
+    ttsModel=names.find(n=>/flash/.test(n))||names[0]||'gemini-2.5-flash-preview-tts';}
+  catch(e){ttsModel='gemini-2.5-flash-preview-tts';}
+  return ttsModel;
+}
+function pcmToWav(b64,rate){
+  const bin=atob(b64),n=bin.length,buf=new ArrayBuffer(44+n),v=new DataView(buf);
+  const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+  w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,n,true);
+  const u8=new Uint8Array(buf,44);for(let i=0;i<n;i++)u8[i]=bin.charCodeAt(i);
+  return new Blob([buf],{type:'audio/wav'});
+}
+const ttsCache=new Map();
+async function humanSpeak(text,fin){
+  const model=await findTtsModel();
+  let blob=ttsCache.get(text);
+  if(!blob){
+    const style='Read this aloud exactly as written, as a 31-year-old guy from Istanbul chatting casually with a close friend: relaxed, warm, natural Istanbul accent and rhythm, everyday speed, real human intonation, not like a narrator.';
+    const r=await tfetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',
+      headers:{'content-type':'application/json','x-goog-api-key':ttsKey()},
+      body:JSON.stringify({contents:[{parts:[{text:style+'\n\n'+text}]}],generationConfig:{responseModalities:['AUDIO'],
+        speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:S.settings.ttsVoice||'Puck'}}}}})},30000);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){if(r.status===404)ttsModel=null;throw new Error(d.error?.message||'tts '+r.status);}
+    const part=(d.candidates?.[0]?.content?.parts||[]).find(p=>p.inlineData);
+    if(!part)throw new Error('no audio');
+    const m=/rate=(\d+)/.exec(part.inlineData.mimeType||'');
+    blob=pcmToWav(part.inlineData.data,m?+m[1]:24000);
+    ttsCache.set(text,blob);if(ttsCache.size>30)ttsCache.delete(ttsCache.keys().next().value);
+  }
+  if(!player)player=new Audio();
+  player.onended=fin;player.onerror=fin;
+  player.src=URL.createObjectURL(blob);
+  player.playbackRate=Math.min(1.25,Math.max(0.7,(S.settings.rate||1)/0.95));
+  await player.play();
+}
+function stopAudio(){try{speechSynthesis.cancel();if(player)player.pause();}catch(e){}if(player){try{player.pause();}catch(e){}}if(curFin){const f=curFin;curFin=null;f();}}
 function speak(text,onend){
+  if(useHumanVoice()){
+    let done=false;const fin=()=>{if(!done){done=true;curFin=null;onend&&onend();}};
+    if(player){try{player.pause();}catch(e){}}
+    $('#status').textContent='konuşuyor…';
+    humanSpeak(text,()=>{$('#status').textContent='çevrimiçi';fin();}).catch(err=>{
+      console.warn('human voice failed',err);
+      if(!warnedTts){warnedTts=true;toast('الصوت البشري ما اشتغل هالمرة، استخدمت صوت الجهاز');}
+      deviceSpeak(text,fin);});
+    return;
+  }
+  deviceSpeak(text,onend);
+}
+let warnedTts=false;
+function deviceSpeak(text,onend){
   let done=false;const fin=()=>{if(!done){done=true;onend&&onend();}};
   if(!('speechSynthesis' in window)){fin();return;}
   try{speechSynthesis.cancel();
@@ -303,11 +387,13 @@ function speak(text,onend){
     try{actx&&actx.resume();}catch(e){}
     setTimeout(()=>speechSynthesis.speak(u),120);
     setTimeout(()=>{if(!started&&!done&&!warnedSilent){warnedSilent=true;toast('ما في صوت؟ اطفي وضع الصامت وارفع الصوت، أو اضغط على رسالة Emre');}},2500);
-    setTimeout(()=>{if(!done){try{speechSynthesis.cancel();}catch(e){}fin();}},Math.max(5000,text.length*110/ (S.settings.rate||1)));
+    setTimeout(()=>{if(!done){try{speechSynthesis.cancel();if(player)player.pause();}catch(e){}fin();}},Math.max(5000,text.length*110/ (S.settings.rate||1)));
   }catch(e){fin();}
 }
 let actx=null;
+const SILENT_WAV='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
 function unlockAudio(){
+  try{if(!player)player=new Audio();player.src=SILENT_WAV;player.play().catch(()=>{});}catch(e){}
   try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance('Hazır');u.lang='tr-TR';if(trVoice)u.voice=trVoice;u.volume=0.01;speechSynthesis.speak(u);}catch(e){}
   try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume();const b=actx.createBuffer(1,1,22050);const s=actx.createBufferSource();s.buffer=b;s.connect(actx.destination);s.start(0);}catch(e){}
 }
@@ -396,9 +482,9 @@ function pickReview(){
     .sort((a,b)=>b.score-a.score).slice(0,6).map(x=>x.v);
 }
 const LEVEL={
-  A1:'Very simple, short sentences, present tense and the most common words.',
-  A2:'Simple everyday sentences, present/past/future, common colloquial words (ya, valla, aynen, hadi). Short sentences.',
-  B1:'Normal everyday speech with some idioms and colloquial shortcuts (napıyosun, geliyom, bi\' dakka).',
+  A1:'Very simple, short sentences and the most common words — but still spoken style (Naber? İyi misin? Hadi ya!), never textbook.',
+  A2:'Simple everyday sentences with real spoken forms and fillers: ya, valla, aynen, hadi, yani, abi, şey, haa, cidden mi?, bi\' (for bir), napıyosun. Short sentences.',
+  B1:'Normal everyday speech: spoken contractions (napıyosun, geliyom, gidiyoz, bi\' dakka, n\'olcak), idioms, fillers and slang like kanka, aynen öyle, boşver, ne alaka.',
   B2:'Fully natural Istanbul speech: slang, idioms, fast casual phrasing, jokes.',
   C1:'Completely native-like casual speech with rich idioms, humor and cultural references.'
 };
@@ -408,7 +494,8 @@ function buildRules(slot,review){
 You are Emre, 31, an interior architect from Istanbul who lives in Kadıköy and works at a small design studio in Moda. You love Fenerbahçe, ferries, tea, street food and old Istanbul buildings; you have a cat called Pamuk. You are chatting with your friend Mahmoud, an Arab architect and interior designer who lives in Beylikdüzü and is learning Turkish. You are his real friend, NOT a teacher.
 
 HOW YOU TALK
-- Only natural, colloquial Istanbul Turkish as people really speak it. Never textbook style.
+- Only natural, colloquial Istanbul Turkish exactly as young people really speak it out loud — spoken contractions, fillers and reactions (Haa, vay be, cidden mi, valla, ya, abi, aynen, hadi ya, of ya, yani, şey…), interjections, unfinished thoughts and casual word order are all welcome. Sound like a real person texting a voice note, never like a textbook, a teacher or customer service. Never over-polite, never formal "siz".
+- Have real opinions and emotions: tease him a little, complain about traffic or work, get excited, tell short anecdotes from your day.
 - Your text is read aloud: 1–3 short sentences, max ~35 words. One question at a time. No emojis, no markdown, no lists, no translations, no parentheses, no stage directions.
 - Mahmoud's level: ${S.profile.level}. ${LEVEL[S.profile.level]||LEVEL.A2} Stay just slightly above his level. If he seems lost, simplify immediately.
 - NEVER correct him explicitly and never explain grammar. Recast instead: echo what he meant in correct natural Turkish inside your reply, then keep chatting. Example: he says "Dün ben gitmek market" → you: "Haa, dün markete gittin yani? Ne aldın?"
@@ -443,31 +530,41 @@ Rules: mistakes = the 3-5 most important or recurring errors from Mahmoud's line
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null,listening=false,wantListen=false,heard=false;
 function setMic(on){const b=$('#micBtn');if(b)b.classList.toggle('on',on);if(!busy)$('#status').textContent=on?'dinliyor…':'çevrimiçi';}
-let emptyRuns=0,silenceT=null,watchT=null;
-function startListening(){
+let emptyRuns=0,silenceT=null,watchT=null,acc='';
+function silenceMs(){return (S.settings.wait||3.5)*1000;}
+function finishSpeech(){
+  clearTimeout(silenceT);clearTimeout(watchT);
+  const t=$('#textIn').value.trim();
+  wantListen=false;acc='';
+  if(rec){try{rec.onend=null;rec.abort();}catch(e){}}
+  listening=false;setMic(false);
+  if(t&&!$('#chat').hidden){emptyRuns=0;sendUser(t);}
+}
+function startListening(keep){
   if(!SR){$('#textIn').focus();toast('استخدم مايك الكيبورد 🎙️');return;}
   if(listening||busy||$('#chat').hidden)return;
-  try{speechSynthesis.cancel();}catch(e){}
-  wantListen=true;heard=false;
-  let fin='',sent=false;
+  try{speechSynthesis.cancel();if(player)player.pause();}catch(e){}
+  wantListen=true;
+  if(!keep){acc='';heard=false;$('#textIn').value='';}
+  else acc=$('#textIn').value.trim();
   try{rec=new SR();}catch(e){wantListen=false;return;}
   rec.lang='tr-TR';rec.interimResults=true;rec.continuous=true;
-  const finish=()=>{if(sent)return;sent=true;clearTimeout(silenceT);clearTimeout(watchT);try{rec.stop();}catch(e){}
-    const t=$('#textIn').value.trim();if(t&&!$('#chat').hidden){wantListen=false;emptyRuns=0;sendUser(t);}};
-  rec.onresult=e=>{let it='';fin='';for(let i=0;i<e.results.length;i++){const x=e.results[i];if(x.isFinal)fin+=x[0].transcript+' ';else it+=x[0].transcript;}
-    const t=(fin+it).trim();if(t){heard=true;clearNudge();$('#textIn').value=t;clearTimeout(silenceT);silenceT=setTimeout(finish,1800);}};
+  rec.onresult=e=>{let fin='',it='';for(let i=0;i<e.results.length;i++){const x=e.results[i];if(x.isFinal)fin+=x[0].transcript+' ';else it+=x[0].transcript;}
+    const t=(acc+' '+fin+it).replace(/\s+/g,' ').trim();
+    if(t){heard=true;clearNudge();$('#textIn').value=t;clearTimeout(silenceT);silenceT=setTimeout(finishSpeech,silenceMs());}};
   rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){wantListen=false;toast('اسمح للمايك من: الإعدادات ← Safari ← الميكروفون');}};
   rec.onend=()=>{listening=false;setMic(false);clearTimeout(watchT);
-    if(sent)return;
-    if($('#textIn').value.trim()){finish();return;}
+    if(!wantListen||busy||$('#chat').hidden)return;
+    const has=!!$('#textIn').value.trim();
+    if(has){setTimeout(()=>{if(wantListen&&!listening&&!busy)startListening(true);},150);return;}
     heard=false;emptyRuns++;
-    if(wantListen&&emptyRuns<3&&!busy&&!$('#chat').hidden&&!document.hidden)setTimeout(()=>{if(wantListen&&!listening&&!busy)startListening();},900);
+    if(emptyRuns<3&&!document.hidden)setTimeout(()=>{if(wantListen&&!listening&&!busy)startListening(false);},700);
     else wantListen=false;};
-  watchT=setTimeout(()=>{if(!heard){try{rec.stop();}catch(e){}}},20000);
+  watchT=setTimeout(()=>{if(!heard&&rec){try{rec.stop();}catch(e){}}},20000);
   try{rec.start();listening=true;setMic(true);}catch(e){listening=false;wantListen=false;setMic(false);}
 }
-function stopListening(){wantListen=false;clearTimeout(silenceT);clearTimeout(watchT);if(rec&&listening){try{rec.abort();}catch(e){}}listening=false;setMic(false);}
-$('#micBtn').onclick=()=>{if(listening||wantListen){stopListening();clearNudge();}else{emptyRuns=0;try{speechSynthesis.cancel();}catch(e){}startListening();}};
+function stopListening(){wantListen=false;acc='';clearTimeout(silenceT);clearTimeout(watchT);if(rec)rec.onend=null;if(rec&&listening){try{rec.abort();}catch(e){}}listening=false;setMic(false);}
+$('#micBtn').onclick=()=>{if((listening||wantListen)&&$('#textIn').value.trim()){finishSpeech();return;}if(listening||wantListen){stopListening();clearNudge();}else{emptyRuns=0;try{speechSynthesis.cancel();if(player)player.pause();}catch(e){}startListening();}};
 
 /* SILENCE NUDGES */
 const NUDGE_POOL={
@@ -497,7 +594,7 @@ function fireNudge(){
   stopListening();afterEmre(line.replace(' 🆘',''));
 }
 function splitReply(t){const i=t.indexOf('>>');return i<0?{say:t.trim(),nudge:''}:{say:t.slice(0,i).trim(),nudge:t.slice(i+2).split('\n')[0].trim()};}
-$('#textIn').addEventListener('input',()=>{if($('#textIn').value.trim())clearNudge();else armNudge();});
+$('#textIn').addEventListener('input',e=>{if(e.isTrusted&&(listening||wantListen)){stopListening();}if($('#textIn').value.trim())clearNudge();else armNudge();});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)clearNudge();else if(!$('#chat').hidden)armNudge();});
 
 /* CHAT */
@@ -535,12 +632,12 @@ function afterEmre(line){
 }
 function sendUser(t){
   t=(t||'').trim();if(busy||!t)return;
-  try{speechSynthesis.cancel();}catch(e){}
+  try{speechSynthesis.cancel();if(player)player.pause();}catch(e){}
   stopListening();clearNudge();nudgeCount=0;pendingNudge='';
   $('#textIn').value='';msgs.push({role:'user',content:t});addBubble('me',t);emreReply();
 }
 $('#startBtn').onclick=startSession;
-$('#sendBtn').onclick=()=>sendUser($('#textIn').value);
+$('#sendBtn').onclick=()=>{if(listening||wantListen){finishSpeech();return;}sendUser($('#textIn').value);};
 $('#textIn').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendUser($('#textIn').value);}});
 
 /* STUCK */
@@ -569,7 +666,7 @@ He wants to say (Arabic): ${ar}`}],{json:true,max:300}));
 /* END + SUMMARY */
 $('#endBtn').onclick=()=>{
   clearNudge();stopListening();
-  try{speechSynthesis.cancel();}catch(e){} clearInterval(timerInt);
+  try{speechSynthesis.cancel();if(player)player.pause();}catch(e){} clearInterval(timerInt);
   const userLines=msgs.filter(m=>m.role==='user'&&!m.hidden);
   if(userLines.length<2){go('home');return;}
   const mins=Math.max(1,Math.round((Date.now()-t0)/60000));
@@ -640,15 +737,15 @@ function renderProgress(){
 /* SETTINGS */
 let resetArmed=false;
 function renderSettings(){
-  const s=S.settings;$('#setKey').value=s.apiKey;if(![...$('#setModel').options].some(o=>o.value===s.model)){const o=document.createElement('option');o.value=o.textContent=s.model;$('#setModel').prepend(o);}$('#setModel').value=s.model;$('#setHands').value=s.hands?'1':'0';$('#setLevel').value=S.profile.level;$('#setRate').value=s.rate;$('#rateVal').textContent=s.rate;$('#setAuto').value=s.auto?'1':'0';
+  const s=S.settings;$('#setKey').value=s.apiKey;if(![...$('#setModel').options].some(o=>o.value===s.model)){const o=document.createElement('option');o.value=o.textContent=s.model;$('#setModel').prepend(o);}$('#setModel').value=s.model;$('#setHands').value=s.hands?'1':'0';$('#setWait').value=String(s.wait||3.5);$('#setEngine').value=s.voiceEngine||'human';$('#setTtsKey').value=s.ttsKey||'';$('#setTtsVoice').value=s.ttsVoice||'Puck';$('#setLevel').value=S.profile.level;$('#setRate').value=s.rate;$('#rateVal').textContent=s.rate;$('#setAuto').value=s.auto?'1':'0';
   pickVoice();const vs=trVoices();
   $('#setVoice').innerHTML=vs.length?vs.map(v=>`<option value="${esc(v.voiceURI)}">${esc(v.name)}</option>`).join(''):'<option value="">الصوت التركي الافتراضي للجهاز</option>';
   if(trVoice)$('#setVoice').value=trVoice.voiceURI;
   resetArmed=false;$('#resetBtn').textContent='مسح كل البيانات';
 }
 $('#setRate').oninput=e=>$('#rateVal').textContent=e.target.value;
-function readSettings(){const s=S.settings;s.apiKey=$('#setKey').value.trim();s.model=$('#setModel').value;s.hands=$('#setHands').value==='1';S.profile.level=$('#setLevel').value;s.rate=parseFloat($('#setRate').value);s.voiceURI=$('#setVoice').value;s.auto=$('#setAuto').value==='1';pickVoice();}
-$('#testVoice').onclick=()=>{readSettings();speak('Selam Mahmoud! Naber, nasılsın bugün?');};
+function readSettings(){const s=S.settings;s.apiKey=$('#setKey').value.trim();s.model=$('#setModel').value;s.hands=$('#setHands').value==='1';s.wait=parseFloat($('#setWait').value)||3.5;s.voiceEngine=$('#setEngine').value;s.ttsKey=$('#setTtsKey').value.trim();s.ttsVoice=$('#setTtsVoice').value;ttsCache.clear();S.profile.level=$('#setLevel').value;s.rate=parseFloat($('#setRate').value);s.voiceURI=$('#setVoice').value;s.auto=$('#setAuto').value==='1';pickVoice();}
+$('#testVoice').onclick=()=>{readSettings();unlockAudio();setTimeout(()=>speak('Selam Mahmoud! Naber ya, nasılsın bugün? Valla çok yoğun bi\' gündü benim için.'),150);};
 $('#saveSettings').onclick=()=>{readSettings();save();toast('تم الحفظ');go('home');};
 $('#exportBtn').onclick=()=>{const a=document.createElement('a');const data={...S,settings:{...S.settings,apiKey:''}};
   a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,1)],{type:'application/json'}));a.download=`emre-backup-${today()}.json`;a.click();};
