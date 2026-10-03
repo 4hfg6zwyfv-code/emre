@@ -526,6 +526,12 @@ const SUMMARY_RULES=`You review a Turkish practice conversation between Mahmoud 
 "next_hook":"one specific thing Emre should follow up next time, short English"}
 Rules: mistakes = the 3-5 most important or recurring errors from Mahmoud's lines only (fewer if he made fewer); ignore dictation artifacts like missing punctuation or capitals. Reuse an existing tag when the error matches a tracked category. vocab = 5-7 useful words or colloquial expressions that appeared in the conversation (prefer ones Emre used or Mahmoud asked help with) and are not in the known list. better = 2-4 of his understandable but unnatural sentences. level = overall estimate; move at most one step from the current level and only with clear evidence. Write the Arabic simply.`;
 
+/* KEEP SCREEN ON during a session */
+let wakeLock=null;
+async function keepAwake(){try{if('wakeLock' in navigator&&!$('#chat').hidden&&!wakeLock){wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null;});}}catch(e){}}
+function releaseAwake(){try{wakeLock&&wakeLock.release();}catch(e){}wakeLock=null;}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)keepAwake();});
+
 /* VOICE IN */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null,listening=false,wantListen=false,heard=false;
@@ -610,7 +616,7 @@ function startSession(){
   unlockAudio();
   msgs=[];stuck=[];nudgeCount=0;pendingNudge='';clearNudge();$('#msgs').innerHTML='';$('#stuckBox').hidden=true;$('#dictHint').hidden=S.profile.sessions>=3||!SR||!S.settings.hands;
   slot=slotNow();review=pickReview();rules=buildRules(slot,review);
-  go('chat');t0=Date.now();clearInterval(timerInt);timerInt=setInterval(tick,1000);tick();
+  go('chat');keepAwake();t0=Date.now();clearInterval(timerInt);timerInt=setInterval(tick,1000);tick();
   const n=new Date();
   msgs.push({role:'user',hidden:true,content:`[${slot==='m'?'Sabah':'Akşam'} sohbeti başladı, saat ${pad(n.getHours())}:${pad(n.getMinutes())}. Sohbeti sen başlat: arkadaşça selam ver ve doğal bir soru sor.]`});
   emreReply();
@@ -665,7 +671,7 @@ He wants to say (Arabic): ${ar}`}],{json:true,max:300}));
 
 /* END + SUMMARY */
 $('#endBtn').onclick=()=>{
-  clearNudge();stopListening();
+  releaseAwake();clearNudge();stopListening();
   try{speechSynthesis.cancel();if(player)player.pause();}catch(e){} clearInterval(timerInt);
   const userLines=msgs.filter(m=>m.role==='user'&&!m.hidden);
   if(userLines.length<2){go('home');return;}
