@@ -299,15 +299,17 @@ function speak(text,onend){
   try{speechSynthesis.cancel();
     const u=new SpeechSynthesisUtterance(text);u.lang='tr-TR';if(trVoice)u.voice=trVoice;u.rate=S.settings.rate;
     u.onend=fin;u.onerror=fin;speechSynthesis.speak(u);
-    setTimeout(fin,Math.max(4000,text.length*120));
+    setTimeout(()=>{if(!done){try{speechSynthesis.cancel();}catch(e){}fin();}},Math.max(5000,text.length*110/ (S.settings.rate||1)));
   }catch(e){fin();}
 }
 function unlockAudio(){try{const u=new SpeechSynthesisUtterance(' ');u.volume=0;u.lang='tr-TR';speechSynthesis.speak(u);}catch(e){}}
 
-/* AI (Gemini) */
+/* AI (Gemini / Claude) */
+async function tfetch(url,opts,ms=25000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);
+  try{return await fetch(url,{...opts,signal:c.signal});}catch(e){const err=new Error(e.name==='AbortError'?'timeout':'network');err.status=e.name==='AbortError'?-1:0;throw err;}finally{clearTimeout(t);}}
 async function claudeLLM(system,turns,{json=false,max=400}={}){
   let model=S.settings.model;if(!model.startsWith('claude'))model='claude-haiku-4-5-20251001';
-  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+  const r=await tfetch('https://api.anthropic.com/v1/messages',{method:'POST',
     headers:{'content-type':'application/json','x-api-key':S.settings.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
     body:JSON.stringify({model,max_tokens:max,system:json?system+'\nReply with only valid JSON.':system,
       messages:(()=>{const m=[];for(const t of turns){const l=m[m.length-1];if(l&&l.role===t.role)l.content+='\n'+t.content;else m.push({role:t.role,content:t.content});}if(m[0]?.role!=='user')m.unshift({role:'user',content:'.'});return m;})()})});
@@ -327,9 +329,9 @@ async function llm(system,turns,opts={}){
   const gc={maxOutputTokens:max,temperature:json?0.4:0.9};
   if(json)gc.responseMimeType='application/json';
   if(model.startsWith('gemini-2.5'))gc.thinkingConfig={thinkingBudget:0};
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',
+  const r=await tfetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',
     headers:{'content-type':'application/json','x-goog-api-key':S.settings.apiKey},
-    body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents,generationConfig:gc})});
+    body:JSON.stringify({systemInstruction:{parts:[{text:system}]},contents,generationConfig:gc})},json?60000:25000);
   const d=await r.json().catch(()=>({}));
   if(!r.ok){const err=new Error(d.error?.message||('HTTP '+r.status));err.status=r.status;throw err;}
   const text=(d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
@@ -343,6 +345,7 @@ function errText(e){
   if(s===402)return 'رصيد مفتاح Claude خلص — اشحن من console.anthropic.com.';
   if(s===429)return 'وصلت الحد المجاني بالدقيقة، استنى شوي وجرّب.';
   if(s===404)return 'النموذج غير متاح — غيّره من الإعدادات.';
+  if(s===-1)return 'الرد تأخر كثير.';
   if(!navigator.onLine)return 'ما في إنترنت.';
   return 'انقطع الاتصال.';
 }
@@ -401,24 +404,31 @@ Rules: mistakes = the 3-5 most important or recurring errors from Mahmoud's line
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null,listening=false,wantListen=false,heard=false;
 function setMic(on){const b=$('#micBtn');if(b)b.classList.toggle('on',on);if(!busy)$('#status').textContent=on?'dinliyor…':'çevrimiçi';}
+let emptyRuns=0,silenceT=null,watchT=null;
 function startListening(){
   if(!SR){$('#textIn').focus();toast('استخدم مايك الكيبورد 🎙️');return;}
   if(listening||busy||$('#chat').hidden)return;
   try{speechSynthesis.cancel();}catch(e){}
   wantListen=true;heard=false;
-  rec=new SR();rec.lang='tr-TR';rec.interimResults=true;rec.continuous=false;
-  let fin='';
-  rec.onresult=e=>{let it='';for(let i=e.resultIndex;i<e.results.length;i++){const x=e.results[i];if(x.isFinal)fin+=x[0].transcript;else it+=x[0].transcript;}
-    const t=(fin+' '+it).trim();if(t){heard=true;clearNudge();}$('#textIn').value=t;};
-  rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){wantListen=false;toast('اسمح للمايك والتعرّف على الكلام من إعدادات Safari');}};
-  rec.onend=()=>{listening=false;setMic(false);const t=$('#textIn').value.trim();
-    if(t&&!$('#chat').hidden){wantListen=false;sendUser(t);return;}
-    heard=false;
-    if(wantListen&&!busy&&!$('#chat').hidden&&!document.hidden)setTimeout(()=>{if(wantListen&&!listening&&!busy)startListening();},350);};
-  try{rec.start();listening=true;setMic(true);}catch(e){listening=false;setMic(false);}
+  let fin='',sent=false;
+  try{rec=new SR();}catch(e){wantListen=false;return;}
+  rec.lang='tr-TR';rec.interimResults=true;rec.continuous=true;
+  const finish=()=>{if(sent)return;sent=true;clearTimeout(silenceT);clearTimeout(watchT);try{rec.stop();}catch(e){}
+    const t=$('#textIn').value.trim();if(t&&!$('#chat').hidden){wantListen=false;emptyRuns=0;sendUser(t);}};
+  rec.onresult=e=>{let it='';fin='';for(let i=0;i<e.results.length;i++){const x=e.results[i];if(x.isFinal)fin+=x[0].transcript+' ';else it+=x[0].transcript;}
+    const t=(fin+it).trim();if(t){heard=true;clearNudge();$('#textIn').value=t;clearTimeout(silenceT);silenceT=setTimeout(finish,1800);}};
+  rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){wantListen=false;toast('اسمح للمايك من: الإعدادات ← Safari ← الميكروفون');}};
+  rec.onend=()=>{listening=false;setMic(false);clearTimeout(watchT);
+    if(sent)return;
+    if($('#textIn').value.trim()){finish();return;}
+    heard=false;emptyRuns++;
+    if(wantListen&&emptyRuns<3&&!busy&&!$('#chat').hidden&&!document.hidden)setTimeout(()=>{if(wantListen&&!listening&&!busy)startListening();},900);
+    else wantListen=false;};
+  watchT=setTimeout(()=>{if(!heard){try{rec.stop();}catch(e){}}},20000);
+  try{rec.start();listening=true;setMic(true);}catch(e){listening=false;wantListen=false;setMic(false);}
 }
-function stopListening(){wantListen=false;if(rec&&listening){try{rec.abort();}catch(e){}}listening=false;setMic(false);}
-$('#micBtn').onclick=()=>{if(listening||wantListen){stopListening();clearNudge();}else{unlockAudio();startListening();}};
+function stopListening(){wantListen=false;clearTimeout(silenceT);clearTimeout(watchT);if(rec&&listening){try{rec.abort();}catch(e){}}listening=false;setMic(false);}
+$('#micBtn').onclick=()=>{if(listening||wantListen){stopListening();clearNudge();}else{emptyRuns=0;try{speechSynthesis.cancel();}catch(e){}startListening();}};
 
 /* SILENCE NUDGES */
 const NUDGE_POOL={
@@ -481,7 +491,7 @@ async function emreReply(){
   }catch(e){ty.remove();setBusy(false);addSys(errText(e),emreReply);}
 }
 function afterEmre(line){
-  const next=()=>{if($('#chat').hidden||busy)return;armNudge();if(S.settings.hands&&SR)startListening();};
+  const next=()=>{if($('#chat').hidden||busy)return;armNudge();emptyRuns=0;if(S.settings.hands&&SR)setTimeout(startListening,300);};
   if(S.settings.auto)speak(line,next);else next();
 }
 function sendUser(t){
